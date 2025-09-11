@@ -1,4 +1,4 @@
-using System.IO.Ports;
+﻿using System.IO.Ports;
 using System.Text;
 using System.Text.Json;
 using Npgsql;
@@ -15,7 +15,7 @@ namespace ControlThangMay
         private ElevatorInfo _elevator2;
 
         // Building configuration
-        private const int MAX_FLOORS = 6; // 0-5 (T?ng tr?t ??n t?ng 5)
+        private const int MAX_FLOORS = 6;
         private const int NUM_ELEVATORS = 2;
 
         // Log system ready flag
@@ -26,12 +26,22 @@ namespace ControlThangMay
         private bool _isDatabaseEnabled = false;
 
         // Log filtering
-        private List<LogItem> _allLogs = new List<LogItem>();
+        private readonly List<LogItem> _allLogs = new();
         private string _currentFilter = "all";
 
         // Tab notification
         private int _newLogCount = 0;
         private bool _isLogTabActive = false;
+
+        // ==== Realtime additions ====
+        private readonly StringBuilder _rxBuf = new StringBuilder(4096);
+        private volatile bool _awaitingReady = false;
+
+        // Map nút (grp, idx) -> Button; lưu màu gốc & auto-off
+        private readonly Dictionary<(char grp, int idx), Button> _btnMap = new();
+        private readonly Dictionary<Button, Color> _btnOrig = new();
+        private readonly Dictionary<(char grp, int idx), DateTime> _btnLastOn = new();
+        private readonly System.Windows.Forms.Timer _btnAutoOffTimer = new() { Interval = 200 };
 
         public Form1()
         {
@@ -41,151 +51,7 @@ namespace ControlThangMay
             AssignEventHandlers();
         }
 
-        // Log item class for filtering
-        private class LogItem
-        {
-            public DateTime Timestamp { get; set; }
-            public string Type { get; set; } = string.Empty;
-            public string Message { get; set; } = string.Empty;
-            public string FormattedText { get; set; } = string.Empty;
-            public Color Color { get; set; }
-        }
-
-        private enum LogType
-        {
-            System,     // H? th?ng
-            Elevator,   // Ho?t ??ng thang m�y
-            User,       // H�nh ??ng ng??i d�ng
-            Emergency,  // Kh?n c?p
-            Error,      // L?i
-            Warning     // C?nh b�o
-        }
-
-        private void InitializeElevators()
-        {
-            _elevator1 = new ElevatorInfo(1);
-            _elevator2 = new ElevatorInfo(2);
-        }
-
-        private void InitializeCustomSettings()
-        {
-            // Initialize database
-            InitializeDatabaseService();
-
-            // Log system is now ready
-            _logSystemReady = true;
-
-            // Initialize tab features
-            InitializeTabFeatures();
-
-            // Add initial log entry
-            AddLog("[SYS] He thong dieu khien da ket noi toi thang may", LogType.System);
-        }
-
-        private async void InitializeDatabaseService()
-        {
-            try
-            {
-                var config = LoadDatabaseConfig();
-
-                if (config.EnableLogging)
-                {
-                    var connectionString = config.GetConnectionString();
-                    _database = new SimpleDatabase(connectionString);
-
-                    var isConnected = await _database.TestConnectionAsync();
-                    if (isConnected)
-                    {
-                        var tablesCreated = await _database.CreateTablesAsync();
-                        _isDatabaseEnabled = tablesCreated;
-
-                        if (_isDatabaseEnabled)
-                        {
-                            AddLog("[DB] Ket noi PostgreSQL thanh cong", LogType.System);
-                        }
-                        else
-                        {
-                            AddLog("[DB] Khong the tao bang database", LogType.Warning);
-                        }
-                    }
-                    else
-                    {
-                        AddLog("[DB] Khong the ket noi PostgreSQL - chi luu log local", LogType.Warning);
-                        _isDatabaseEnabled = false;
-                    }
-                }
-                else
-                {
-                    AddLog("[DB] Database logging da duoc tat", LogType.System);
-                }
-            }
-            catch (Exception ex)
-            {
-                AddLog($"[ERROR] Loi khoi tao database: {ex.Message}", LogType.Error);
-                _isDatabaseEnabled = false;
-            }
-        }
-
-        private DatabaseConfig LoadDatabaseConfig()
-        {
-            try
-            {
-                if (File.Exists("config.json"))
-                {
-                    var json = File.ReadAllText("config.json");
-                    var options = new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true,
-                        WriteIndented = true
-                    };
-
-                    var config = JsonSerializer.Deserialize<ConfigFile>(json, options);
-                    if (config?.Database != null)
-                    {
-                        return config.Database;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error loading config: {ex.Message}");
-            }
-
-            // Default config v?i Supabase
-            var defaultConfig = new DatabaseConfig
-            {
-                Host = "localhost",
-                Port = 5432,
-                Database = "postgres",
-                Username = "postgres",
-                Password = "123456",
-                EnableSSL = true,
-                EnableLogging = true
-            };
-
-            SaveDatabaseConfig(defaultConfig);
-            return defaultConfig;
-        }
-
-        private void SaveDatabaseConfig(DatabaseConfig config)
-        {
-            try
-            {
-                var configFile = new ConfigFile { Database = config };
-                var options = new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true,
-                    WriteIndented = true
-                };
-                var json = JsonSerializer.Serialize(configFile, options);
-                File.WriteAllText("config.json", json);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error saving config: {ex.Message}");
-            }
-        }
-
+        // Add missing AssignEventHandlers stub to avoid build error (designer usually wires events)
         private void AssignEventHandlers()
         {
             btnConnect.Click += btnConnect_Click;
@@ -245,6 +111,112 @@ namespace ControlThangMay
             btnMaintenanceMode.Click += (s, e) => MaintenanceMode();
         }
 
+        // Log item class for filtering
+        private class LogItem
+        {
+            public DateTime Timestamp { get; set; }
+            public string Type { get; set; } = string.Empty;
+            public string Message { get; set; } = string.Empty;
+            public string FormattedText { get; set; } = string.Empty;
+            public Color Color { get; set; }
+        }
+
+        private enum LogType
+        {
+            System,     // Hệ thống
+            Elevator,   // Hoạt động thang máy
+            User,       // Hành động người dùng
+            Emergency,  // Khẩn cấp
+            Error,      // Lỗi
+            Warning     // Cảnh báo
+        }
+
+        private void InitializeElevators()
+        {
+            _elevator1 = new ElevatorInfo(1);
+            _elevator2 = new ElevatorInfo(2);
+        }
+
+        private void InitializeCustomSettings()
+        {
+            // Initialize database
+            InitializeDatabaseService();
+
+            // Build UI button map & auto-off
+            BuildButtonMap();
+            SetupAutoOff();
+
+            // Log system is now ready
+            _logSystemReady = true;
+
+            // Initialize tab features
+            InitializeTabFeatures();
+
+            // Add initial log entry
+            AddLog("[SYS] He thong dieu khien da khoi dong", LogType.System);
+        }
+
+        private void BuildButtonMap()
+        {
+            // HALL 10 nút theo thứ tự index 0..9 (khớp mảng hallPins trên Arduino)
+            _btnMap[('H', 0)] = btnCallFloor0Up;
+            _btnMap[('H', 1)] = btnCallFloor1Down;
+            _btnMap[('H', 2)] = btnCallFloor1Up;
+            _btnMap[('H', 3)] = btnCallFloor2Down;
+            _btnMap[('H', 4)] = btnCallFloor2Up;
+            _btnMap[('H', 5)] = btnCallFloor3Down;
+            _btnMap[('H', 6)] = btnCallFloor3Up;
+            _btnMap[('H', 7)] = btnCallFloor4Down;
+            _btnMap[('H', 8)] = btnCallFloor4Up;
+            _btnMap[('H', 9)] = btnCallFloor5Down;
+
+            // Cabin A → dùng cụm nút chọn tầng thang 1
+            _btnMap[('A', 0)] = btnE1Floor0;
+            _btnMap[('A', 1)] = btnE1Floor1;
+            _btnMap[('A', 2)] = btnE1Floor2;
+            _btnMap[('A', 3)] = btnE1Floor3;
+            _btnMap[('A', 4)] = btnE1Floor4;
+            _btnMap[('A', 5)] = btnE1Floor5;
+
+            // Cabin B → dùng cụm nút chọn tầng thang 2
+            _btnMap[('B', 0)] = btnE2Floor0;
+            _btnMap[('B', 1)] = btnE2Floor1;
+            _btnMap[('B', 2)] = btnE2Floor2;
+            _btnMap[('B', 3)] = btnE2Floor3;
+            _btnMap[('B', 4)] = btnE2Floor4;
+            _btnMap[('B', 5)] = btnE2Floor5;
+
+            // Door: C=Close, O=Open ; idx 0 -> E1, idx 1 -> E2
+            _btnMap[('C', 0)] = btnE1CloseDoor;
+            _btnMap[('C', 1)] = btnE2CloseDoor;
+            _btnMap[('O', 0)] = btnE1OpenDoor;
+            _btnMap[('O', 1)] = btnE2OpenDoor;
+
+            foreach (var kv in _btnMap)
+            {
+                var b = kv.Value;
+                if (b != null && !_btnOrig.ContainsKey(b)) _btnOrig[b] = b.BackColor;
+            }
+        }
+
+        private void SetupAutoOff()
+        {
+            _btnAutoOffTimer.Tick += (s, e) =>
+            {
+                var now = DateTime.UtcNow;
+                var keys = _btnLastOn.Keys.ToList();
+                foreach (var k in keys)
+                {
+                    if ((now - _btnLastOn[k]).TotalMilliseconds > 800) // mất gói release → tự nhả
+                    {
+                        SetButtonPressed(k.grp, k.idx, false);
+                        _btnLastOn.Remove(k);
+                    }
+                }
+            };
+            _btnAutoOffTimer.Start();
+        }
+
         private void InitializeTabFeatures()
         {
             if (tabControlMain != null)
@@ -262,6 +234,8 @@ namespace ControlThangMay
                 _isLogTabActive = true;
                 _newLogCount = 0;
                 UpdateLogTabTitle();
+                // Refresh from DB (or local) when switching to Logs tab
+                FilterLogs();
                 AddLog("[TAB] Dang xem nhat ky he thong", LogType.System);
             }
             else
@@ -296,20 +270,15 @@ namespace ControlThangMay
 
             if (rtbLog.InvokeRequired)
             {
-                try
-                {
-                    rtbLog.Invoke(new Action(() => AddLog(message, type)));
-                }
-                catch (ObjectDisposedException)
-                {
-                    Console.WriteLine("ObjectDisposedException in AddLog");
-                }
+                try { rtbLog.Invoke(new Action(() => AddLog(message, type))); }
+                catch (ObjectDisposedException) { }
                 return;
             }
 
             try
             {
-                string timestamp = DateTime.Now.ToString("HH:mm:ss");
+                // Show both date and time
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                 string icon = GetLogIcon(type);
                 string logEntry = $"[{timestamp}] {icon} {message}\n";
                 Color logColor = GetLogColor(type);
@@ -323,11 +292,7 @@ namespace ControlThangMay
                     Color = logColor
                 };
                 _allLogs.Add(logItem);
-
-                if (_allLogs.Count > 500)
-                {
-                    _allLogs.RemoveAt(0);
-                }
+                if (_allLogs.Count > 500) _allLogs.RemoveAt(0);
 
                 if (ShouldShowLog(logItem))
                 {
@@ -347,24 +312,18 @@ namespace ControlThangMay
 
                 SaveLogToDatabase(message, type, icon);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Log system error: {ex.Message}");
-            }
+            catch { }
         }
 
         private async void SaveLogToDatabase(string message, LogType type, string icon, string? commandSent = null)
         {
-            if (!_isDatabaseEnabled || _database == null)
-                return;
+            if (!_isDatabaseEnabled || _database == null) return;
 
             try
             {
                 int? elevatorNumber = null;
-                if (message.Contains("E1") || message.Contains("thang may 1"))
-                    elevatorNumber = 1;
-                else if (message.Contains("E2") || message.Contains("thang may 2"))
-                    elevatorNumber = 2;
+                if (message.Contains("E1") || message.Contains("thang may 1")) elevatorNumber = 1;
+                else if (message.Contains("E2") || message.Contains("thang may 2")) elevatorNumber = 2;
 
                 int priority = type switch
                 {
@@ -390,41 +349,33 @@ namespace ControlThangMay
                     Priority = priority
                 };
 
-                await _database.AddLogAsync(logEntry);
+                // Avoid resuming on UI context to reduce UI freezes under heavy DB load
+                await _database.AddLogAsync(logEntry).ConfigureAwait(false);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error saving log to database: {ex.Message}");
-            }
+            catch { }
         }
 
-        private string GetLogIcon(LogType type)
+        private string GetLogIcon(LogType type) => type switch
         {
-            return type switch
-            {
-                LogType.System => "[SYS]",
-                LogType.Elevator => "[ELV]",
-                LogType.User => "[USR]",
-                LogType.Emergency => "[EMG]",
-                LogType.Error => "[ERR]",
-                LogType.Warning => "[WRN]",
-                _ => "[LOG]"
-            };
-        }
+            LogType.System => "[SYS]",
+            LogType.Elevator => "[ELV]",
+            LogType.User => "[USR]",
+            LogType.Emergency => "[EMG]",
+            LogType.Error => "[ERR]",
+            LogType.Warning => "[WRN]",
+            _ => "[LOG]"
+        };
 
-        private Color GetLogColor(LogType type)
+        private Color GetLogColor(LogType type) => type switch
         {
-            return type switch
-            {
-                LogType.System => Color.Cyan,
-                LogType.Elevator => Color.LimeGreen,
-                LogType.User => Color.Yellow,
-                LogType.Emergency => Color.Red,
-                LogType.Error => Color.Red,
-                LogType.Warning => Color.Orange,
-                _ => Color.White
-            };
-        }
+            LogType.System => Color.Cyan,
+            LogType.Elevator => Color.LimeGreen,
+            LogType.User => Color.Yellow,
+            LogType.Emergency => Color.Red,
+            LogType.Error => Color.Red,
+            LogType.Warning => Color.Orange,
+            _ => Color.White
+        };
 
         private void Form1_Load(object sender, EventArgs e)
         {
@@ -440,15 +391,21 @@ namespace ControlThangMay
         {
             AddLog("Khoi tao ket noi voi he thong dieu khien thang may", LogType.System);
             AddLog("Dang kiem tra cau hinh ket noi...", LogType.Warning);
-            AddLog("Giao dien dieu khien da ket noi thanh cong", LogType.User);
-            AddLog("He thong log da ket noi toi thang may", LogType.Elevator);
+            AddLog("Giao dien dieu khien da san sang", LogType.User);
         }
 
         private void InitializeSerialSettings()
         {
-            _serialPort = new SerialPort();
+            _serialPort = new SerialPort
+            {
+                Encoding = Encoding.UTF8,
+                NewLine = "\n",
+                ReadTimeout = 50,
+                WriteTimeout = 200,
+                ReadBufferSize = 64 * 1024,
+                WriteBufferSize = 16 * 1024
+            };
             _serialPort.DataReceived += SerialPort_DataReceived;
-            _serialPort.Encoding = Encoding.UTF8;
         }
 
         private void LoadAvailablePorts()
@@ -476,9 +433,11 @@ namespace ControlThangMay
         {
             if (cmbBaudRate == null) return;
 
-            int[] baudRates = { 9600, 19200, 38400, 57600, 115200 };
+            // Giữ <= 57600 theo yêu cầu
+            int[] baudRates = { 9600, 19200, 38400, 57600 };
+            cmbBaudRate.Items.Clear();
             cmbBaudRate.Items.AddRange(baudRates.Cast<object>().ToArray());
-            cmbBaudRate.SelectedIndex = 0;
+            cmbBaudRate.SelectedItem = 57600;  // mặc định 57k6 cho realtime ổn
         }
 
         private void btnRefreshPorts_Click(object sender, EventArgs e)
@@ -489,14 +448,8 @@ namespace ControlThangMay
 
         private void btnConnect_Click(object sender, EventArgs e)
         {
-            if (!_isConnected)
-            {
-                ConnectSerial();
-            }
-            else
-            {
-                DisconnectSerial();
-            }
+            if (!_isConnected) ConnectSerial();
+            else DisconnectSerial();
         }
 
         private void ConnectSerial()
@@ -526,8 +479,6 @@ namespace ControlThangMay
                 _serialPort.DataBits = 8;
                 _serialPort.StopBits = StopBits.One;
                 _serialPort.Handshake = Handshake.None;
-                _serialPort.ReadTimeout = 1000;
-                _serialPort.WriteTimeout = 1000;
 
                 _serialPort.Open();
                 _isConnected = true;
@@ -578,12 +529,10 @@ namespace ControlThangMay
 
         private void InitializeElevatorSystem()
         {
+            // Handshake không sleep: chờ SYSTEM_READY rồi mới init cabin
+            _awaitingReady = true;
             SendCommand("INIT_SYSTEM");
-            Thread.Sleep(500);
-            SendCommand("E1_INIT");
-            Thread.Sleep(100);
-            SendCommand("E2_INIT");
-            AddLog("Da ket noi va khoi tao he thong thang may", LogType.System);
+            AddLog("Gui INIT_SYSTEM, cho SYSTEM_READY...", LogType.System);
         }
 
         private void UpdateUI()
@@ -728,8 +677,7 @@ namespace ControlThangMay
 
                     Task.Run(async () =>
                     {
-                        await Task.Delay(1500);
-
+                        await Task.Delay(800);
                         if (_isConnected && _serialPort != null && _serialPort.IsOpen)
                         {
                             this.Invoke(new Action(() =>
@@ -791,27 +739,21 @@ namespace ControlThangMay
 
         #region Helper Methods
 
-        private string GetFloorName(int floor)
-        {
-            return floor == 0 ? "Tang tret (0)" : $"Tang {floor}";
-        }
+        private string GetFloorName(int floor) => floor == 0 ? "Tang tret (0)" : $"Tang {floor}";
 
-        private Color GetStatusColor(string status)
+        private Color GetStatusColor(string status) => status switch
         {
-            return status switch
-            {
-                "Cho" => Color.Blue,
-                "Dang di chuyen" => Color.Orange,
-                "Mo cua" => Color.Green,
-                "Dong cua" => Color.DarkGreen,
-                "Da dung" => Color.Red,
-                "Khan cap" => Color.Red,
-                "Bao chay" => Color.Red,
-                "Bao tri" => Color.Purple,
-                "Dang phuc vu" => Color.DarkBlue,
-                _ => Color.Gray
-            };
-        }
+            "Cho" => Color.Blue,
+            "Dang di chuyen" => Color.Orange,
+            "Mo cua" => Color.Green,
+            "Dong cua" => Color.DarkGreen,
+            "Da dung" => Color.Red,
+            "Khan cap" => Color.Red,
+            "Bao chay" => Color.Red,
+            "Bao tri" => Color.Purple,
+            "Dang phuc vu" => Color.DarkBlue,
+            _ => Color.Gray
+        };
 
         private bool SendCommand(string command)
         {
@@ -841,22 +783,50 @@ namespace ControlThangMay
             }
         }
 
+        private void SetButtonPressed(char grp, int idx, bool pressed)
+        {
+            if (_btnMap.TryGetValue((grp, idx), out var btn) && btn != null)
+            {
+                var onColor = Color.Gold;
+                var offColor = _btnOrig.TryGetValue(btn, out var c) ? c : SystemColors.Control;
+                btn.BackColor = pressed ? onColor : offColor;
+
+                if (pressed) _btnLastOn[(grp, idx)] = DateTime.UtcNow;
+                else _btnLastOn.Remove((grp, idx));
+            }
+        }
+
         #endregion
 
         #region Serial Communication
+
+        // Efficiently find the first newline index in StringBuilder without ToString() allocations
+        private static int IndexOfNewline(StringBuilder sb)
+        {
+            for (int i = 0; i < sb.Length; i++)
+            {
+                if (sb[i] == '\n') return i;
+            }
+            return -1;
+        }
 
         private void SerialPort_DataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             try
             {
-                if (_serialPort.BytesToRead > 0)
+                string chunk = _serialPort.ReadExisting();
+                if (string.IsNullOrEmpty(chunk)) return;
+
+                lock (_rxBuf)
                 {
-                    string data = _serialPort.ReadLine().Trim();
-                    
-                    this.Invoke(new Action(() =>
+                    _rxBuf.Append(chunk);
+                    int idx;
+                    while ((idx = IndexOfNewline(_rxBuf)) >= 0)
                     {
-                        ProcessReceivedData(data);
-                    }));
+                        string line = _rxBuf.ToString(0, idx).TrimEnd('\r');
+                        _rxBuf.Remove(0, idx + 1);
+                        this.BeginInvoke(new Action(() => ProcessReceivedData(line)));
+                    }
                 }
             }
             catch (Exception ex)
@@ -875,6 +845,7 @@ namespace ControlThangMay
                 }
                 else if (data.StartsWith("S,"))
                 {
+                    // snapshot: dùng để đồng bộ trạng thái nền – không log để tránh spam
                     ProcessSnapshotData(data);
                 }
                 else if (data.StartsWith("CMD,"))
@@ -901,30 +872,34 @@ namespace ControlThangMay
             {
                 if (parts[1] == "BTN" && parts.Length >= 6)
                 {
-                    string group = parts[2];
+                    char group = parts[2][0];
                     int idx = int.Parse(parts[3]);
                     bool pressed = parts[4] == "1";
 
+                    // Đổi màu nút ngay
+                    SetButtonPressed(group, idx, pressed);
+
+                    // Log (chỉ khi pressed để gọn)
                     if (pressed)
                     {
                         switch (group)
                         {
-                            case "H":
+                            case 'H':
                                 string direction = (idx % 2 == 0) ? "Len" : "Xuong";
                                 int floor = GetFloorFromHallIndex(idx);
                                 AddLog($"[HALL] Goi thang may tai tang {floor} huong {direction}", LogType.User);
                                 break;
-                            case "A":
+                            case 'A':
                                 AddLog($"[CAB-A] Chon tang {idx} trong thang may A", LogType.Elevator);
                                 break;
-                            case "B":
+                            case 'B':
                                 AddLog($"[CAB-B] Chon tang {idx} trong thang may B", LogType.Elevator);
                                 break;
-                            case "C":
+                            case 'C':
                                 char closeCabin = (idx == 0) ? 'A' : 'B';
                                 AddLog($"[DOOR] Nhan nut dong cua thang may {closeCabin}", LogType.Elevator);
                                 break;
-                            case "O":
+                            case 'O':
                                 char openCabin = (idx == 0) ? 'A' : 'B';
                                 AddLog($"[DOOR] Nhan nut mo cua thang may {openCabin}", LogType.Elevator);
                                 break;
@@ -961,6 +936,8 @@ namespace ControlThangMay
 
                 UpdateElevatorFromSnapshot('A', floorA, stateA);
                 UpdateElevatorFromSnapshot('B', floorB, stateB);
+
+                UpdateUI(); // đồng bộ UI nhẹ nhàng theo snapshot
             }
             catch (Exception ex)
             {
@@ -970,21 +947,14 @@ namespace ControlThangMay
 
         private void ProcessCommandResponse(string data)
         {
-            // CMD,ACK,COMMAND ho?c CMD,ERROR,UNKNOWN_COMMAND
             var parts = data.Split(',');
             if (parts.Length >= 3)
             {
                 string status = parts[1];
                 string command = parts[2];
-                
-                if (status == "ACK")
-                {
-                    AddLog($"[ACK] Arduino xac nhan lenh: {command}", LogType.System);
-                }
-                else if (status == "ERROR")
-                {
-                    AddLog($"[ERROR] Arduino bao loi lenh: {command}", LogType.Error);
-                }
+
+                if (status == "ACK") AddLog($"[ACK] Arduino xac nhan lenh: {command}", LogType.System);
+                else if (status == "ERROR") AddLog($"[ERROR] Arduino bao loi lenh: {command}", LogType.Error);
             }
         }
 
@@ -1001,27 +971,13 @@ namespace ControlThangMay
 
             switch (state)
             {
-                case 0: // IDLE
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dang cho tai {floorText}", LogType.Elevator);
-                    break;
-                case 1: // DOOR_OPEN
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} mo cua tai {floorText}", LogType.Elevator);
-                    break;
-                case 2: // WAIT
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dang cho khach tai {floorText}", LogType.Elevator);
-                    break;
-                case 3: // DOOR_CLOSE
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dong cua tai {floorText}", LogType.Elevator);
-                    break;
-                case 4: // WAIT_PICK
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} san sang di chuyen tu {floorText}", LogType.Elevator);
-                    break;
-                case 5: // MOVE
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dang di chuyen {dirText} tu {floorText}", LogType.Elevator);
-                    break;
-                case 6: // ARRIVED
-                    AddLog($"[E{elevatorNum}] Thang may {elevatorNum} da den {floorText}", LogType.Elevator);
-                    break;
+                case 0: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dang cho tai {floorText}", LogType.Elevator); break;
+                case 1: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} mo cua tai {floorText}", LogType.Elevator); break;
+                case 2: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dang cho khach tai {floorText}", LogType.Elevator); break;
+                case 3: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dong cua tai {floorText}", LogType.Elevator); break;
+                case 4: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} san sang di chuyen tu {floorText}", LogType.Elevator); break;
+                case 5: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} dang di chuyen {dirText} tu {floorText}", LogType.Elevator); break;
+                case 6: AddLog($"[E{elevatorNum}] Thang may {elevatorNum} da den {floorText}", LogType.Elevator); break;
             }
 
             UpdateUI();
@@ -1030,7 +986,6 @@ namespace ControlThangMay
         private void UpdateElevatorFromSnapshot(char car, int floor, int state)
         {
             var elevator = (car == 'A') ? _elevator1 : _elevator2;
-            
             elevator.CurrentFloor = floor;
             elevator.Status = GetStatusFromState(state);
         }
@@ -1039,7 +994,14 @@ namespace ControlThangMay
         {
             if (data.Contains("SYSTEM_READY"))
             {
-                AddLog("[SYS] He thong Arduino da ket noi va san sang", LogType.System);
+                AddLog("[SYS] He thong Arduino da san sang", LogType.System);
+                if (_awaitingReady)
+                {
+                    _awaitingReady = false;
+                    SendCommand("E1_INIT");
+                    SendCommand("E2_INIT");
+                    AddLog("[SYS] Da gui E1_INIT, E2_INIT", LogType.System);
+                }
             }
             else if (data.Contains("SYSTEM_ERROR"))
             {
@@ -1049,41 +1011,35 @@ namespace ControlThangMay
             }
             else
             {
-                AddLog($"[RAW] Tu Arduino: {data}", LogType.System);
+                // Không log RAW để tránh spam
             }
         }
 
         private int GetFloorFromHallIndex(int hallIdx)
         {
-            int[] hallFloorMap = {0, 1, 1, 2, 2, 3, 3, 4, 4, 5};
+            int[] hallFloorMap = { 0, 1, 1, 2, 2, 3, 3, 4, 4, 5 };
             return (hallIdx < hallFloorMap.Length) ? hallFloorMap[hallIdx] : 0;
         }
 
-        private string GetDirectionText(int dir)
+        private string GetDirectionText(int dir) => dir switch
         {
-            return dir switch
-            {
-                -1 => "xuong",
-                0 => "dung",
-                1 => "len",
-                _ => "khong xac dinh"
-            };
-        }
+            -1 => "xuong",
+            0 => "dung",
+            1 => "len",
+            _ => "khong xac dinh"
+        };
 
-        private string GetStatusFromState(int state)
+        private string GetStatusFromState(int state) => state switch
         {
-            return state switch
-            {
-                0 => "Cho",
-                1 => "Mo cua",
-                2 => "Dang cho",
-                3 => "Dong cua", 
-                4 => "San sang",
-                5 => "Dang di chuyen",
-                6 => "Da den",
-                _ => "Khong xac dinh"
-            };
-        }
+            0 => "Cho",
+            1 => "Mo cua",
+            2 => "Dang cho",
+            3 => "Dong cua",
+            4 => "San sang",
+            5 => "Dang di chuyen",
+            6 => "Da den",
+            _ => "Khong xac dinh"
+        };
 
         #endregion
 
@@ -1135,15 +1091,20 @@ namespace ControlThangMay
             }
         }
 
+        // Updated: if DB is enabled, query from DB; otherwise fallback to local buffer
         private void FilterLogs()
         {
-            if (rtbLog == null || rtbLog.IsDisposed)
+            if (_isDatabaseEnabled && _database != null)
+            {
+                _ = LoadLogsFromDatabaseAsync();
                 return;
+            }
+
+            if (rtbLog == null || rtbLog.IsDisposed) return;
 
             try
             {
                 rtbLog.Clear();
-
                 var filteredLogs = _allLogs.Where(log => ShouldShowLog(log)).ToList();
 
                 foreach (var log in filteredLogs)
@@ -1159,10 +1120,7 @@ namespace ControlThangMay
 
                 UpdateFilterButtonStates();
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error filtering logs: {ex.Message}");
-            }
+            catch { }
         }
 
         private bool ShouldShowLog(LogItem log)
@@ -1188,27 +1146,17 @@ namespace ControlThangMay
 
             switch (_currentFilter)
             {
-                case "system":
-                    btnFilterSystem.BackColor = Color.Gold;
-                    break;
-                case "elevator":
-                    btnFilterElevator.BackColor = Color.DeepSkyBlue;
-                    break;
-                case "emergency":
-                    btnFilterEmergency.BackColor = Color.HotPink;
-                    break;
-                case "date":
-                    btnFilterByDate.BackColor = Color.DarkCyan;
-                    break;
-                case "all":
-                    btnResetFilter.BackColor = Color.Silver;
-                    break;
+                case "system": btnFilterSystem.BackColor = Color.Gold; break;
+                case "elevator": btnFilterElevator.BackColor = Color.DeepSkyBlue; break;
+                case "emergency": btnFilterEmergency.BackColor = Color.HotPink; break;
+                case "date": btnFilterByDate.BackColor = Color.DarkCyan; break;
+                case "all": btnResetFilter.BackColor = Color.Silver; break;
             }
         }
 
         private void BtnClearLog_Click(object sender, EventArgs e)
         {
-            DialogResult result = MessageBox.Show("Ban co chac muon xoa tat ca log?", "Xac nhan",
+            var result = MessageBox.Show("Ban co chac muon xoa tat ca log?", "Xac nhan",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question);
 
             if (result == DialogResult.Yes)
@@ -1216,6 +1164,44 @@ namespace ControlThangMay
                 rtbLog.Clear();
                 _allLogs.Clear();
                 AddLog("Log da duoc xoa (chi xoa hien thi - database van giu)", LogType.System);
+            }
+        }
+
+        // Query logs from database according to current filter and render
+        private async Task LoadLogsFromDatabaseAsync()
+        {
+            try
+            {
+                if (_database == null || !_isDatabaseEnabled) return;
+
+                DateTime? date = _currentFilter == "date" ? dtpFilterDate.Value.Date : (DateTime?)null;
+                var logs = await _database.QueryLogsAsync(_currentFilter, date);
+
+                if (rtbLog == null || rtbLog.IsDisposed) return;
+                rtbLog.Clear();
+
+                foreach (var log in logs)
+                {
+                    // Map type string to color/icon
+                    if (!Enum.TryParse<LogType>(log.Type, out var t)) t = LogType.System;
+                    string icon = GetLogIcon(t);
+                    Color color = GetLogColor(t);
+                    string ts = log.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                    string line = $"[{ts}] {icon} {log.Message}\n";
+
+                    rtbLog.SelectionStart = rtbLog.TextLength;
+                    rtbLog.SelectionLength = 0;
+                    rtbLog.SelectionColor = color;
+                    rtbLog.AppendText(line);
+                }
+
+                rtbLog.SelectionColor = rtbLog.ForeColor;
+                rtbLog.ScrollToCaret();
+                UpdateFilterButtonStates();
+            }
+            catch (Exception ex)
+            {
+                AddLog($"[DB] Loi truy van log: {ex.Message}", LogType.Error);
             }
         }
 
@@ -1236,7 +1222,7 @@ namespace ControlThangMay
                 if (_isDatabaseEnabled)
                 {
                     AddLog("[SYS] Ket thuc session - da luu vao database", LogType.System);
-                    Thread.Sleep(500);
+                    // Không sleep để tránh chặn tắt ứng dụng
                 }
             }
             catch (Exception ex)
@@ -1248,31 +1234,100 @@ namespace ControlThangMay
         private void lblSelectDate_Click(object sender, EventArgs e) { }
         private void lblElevator2Position_Click(object sender, EventArgs e) { }
         private void lblElevator2Status_Click(object sender, EventArgs e) { }
-    }
 
-    // Database Classes
-    public class DatabaseConfig
-    {
-        public string Host { get; set; } = "localhost";
-        public int Port { get; set; } = 5432;
-        public string Database { get; set; } = "postgres";
-        public string Username { get; set; } = "postgres";
-        public string Password { get; set; } = "123456";
-        public bool EnableSSL { get; set; } = false;
-        public bool EnableLogging { get; set; } = true;
-
-        public string GetConnectionString()
+        // ====== Database bootstrap ======
+        private async void InitializeDatabaseService()
         {
-            var sslMode = EnableSSL ? "Require" : "Disable";
-            return $"Host={Host};Port={Port};Database={Database};Username={Username};Password={Password};SSL Mode={sslMode};Timeout=30;";
+            try
+            {
+                var cfg = LoadDbConfigOrCreateTemplate();
+                var connString = BuildConnectionString(cfg);
+
+                _database = new SimpleDatabase(connString);
+                var isConnected = await _database.TestConnectionAsync().ConfigureAwait(false);
+                if (isConnected)
+                {
+                    var tablesCreated = await _database.CreateTablesAsync().ConfigureAwait(false);
+                    _isDatabaseEnabled = tablesCreated;
+
+                    if (_isDatabaseEnabled) AddLog("[DB] Ket noi PostgreSQL thanh cong", LogType.System);
+                    else AddLog("[DB] Khong the tao bang database", LogType.Warning);
+                }
+                else
+                {
+                    AddLog("[DB] Khong the ket noi PostgreSQL - chi luu log local", LogType.Warning);
+                    _isDatabaseEnabled = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"[ERROR] Loi khoi tao database: {ex.Message}", LogType.Error);
+                _isDatabaseEnabled = false;
+            }
+        }
+
+        private static DbBasicConfig LoadDbConfigOrCreateTemplate()
+        {
+            const string file = "config.json";
+            try
+            {
+                if (File.Exists(file))
+                {
+                    var json = File.ReadAllText(file);
+                    var cfg = JsonSerializer.Deserialize<DbBasicConfig>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    if (cfg == null) throw new Exception("File config.json khong hop le");
+                    if (string.IsNullOrWhiteSpace(cfg.Host) || string.IsNullOrWhiteSpace(cfg.Username))
+                        throw new Exception("Thieu Host/Username trong config.json");
+                    if (cfg.Port <= 0) cfg.Port = 5432;
+                    return cfg;
+                }
+                else
+                {
+                    var template = new DbBasicConfig
+                    {
+                        Host = "127.0.0.1",
+                        Port = 5432,
+                        Username = "postgres",
+                        Password = "123456"
+                    };
+                    var json = JsonSerializer.Serialize(template, new JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(file, json);
+                    return template;
+                }
+            }
+            catch
+            {
+                // Fallback mặc định local
+                return new DbBasicConfig
+                {
+                    Host = "127.0.0.1",
+                    Port = 5432,
+                    Username = "postgres",
+                    Password = "123456"
+                };
+            }
+        }
+
+        private static string BuildConnectionString(DbBasicConfig cfg)
+        {
+            // Ép SSL Require nếu dùng Supabase
+            bool isSupabase = cfg.Host.EndsWith(".supabase.co", StringComparison.OrdinalIgnoreCase);
+            string sslMode = isSupabase ? "Require" : "Disable";
+            var cs = $"Host={cfg.Host};Port={cfg.Port};Database=postgres;Username={cfg.Username};Password={cfg.Password};SSL Mode={sslMode};Timeout=30;";
+            return cs;
         }
     }
 
-    public class ConfigFile
+    // ==== DB Config types ====
+    public class DbBasicConfig
     {
-        public DatabaseConfig Database { get; set; } = new DatabaseConfig();
+        public string Host { get; set; } = "127.0.0.1";
+        public int Port { get; set; } = 5432;
+        public string Username { get; set; } = "postgres";
+        public string Password { get; set; } = "123456";
     }
 
+    // ==== Database runtime ====
     public class LogEntry
     {
         public long LogId { get; set; }
@@ -1309,9 +1364,9 @@ namespace ControlThangMay
             try
             {
                 using var connection = new NpgsqlConnection(_connectionString);
-                await connection.OpenAsync();
+                await connection.OpenAsync().ConfigureAwait(false);
                 using var cmd = new NpgsqlCommand("SELECT 1", connection);
-                await cmd.ExecuteScalarAsync();
+                await cmd.ExecuteScalarAsync().ConfigureAwait(false);
                 _isConnected = true;
                 return true;
             }
@@ -1327,7 +1382,7 @@ namespace ControlThangMay
             try
             {
                 using var connection = new NpgsqlConnection(_connectionString);
-                await connection.OpenAsync();
+                await connection.OpenAsync().ConfigureAwait(false);
 
                 var sql = @"
                     CREATE TABLE IF NOT EXISTS elevator (
@@ -1337,7 +1392,7 @@ namespace ControlThangMay
                     );
 
                     INSERT INTO elevator (code, display_name)
-                    VALUES ('E1','Thang m�y 1'), ('E2','Thang m�y 2')
+                    VALUES ('E1','Thang máy 1'), ('E2','Thang máy 2')
                     ON CONFLICT (code) DO NOTHING;
 
                     CREATE TABLE IF NOT EXISTS log (
@@ -1360,7 +1415,7 @@ namespace ControlThangMay
                 ";
 
                 using var command = new NpgsqlCommand(sql, connection);
-                await command.ExecuteNonQueryAsync();
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
                 _isConnected = true;
                 return true;
             }
@@ -1375,14 +1430,14 @@ namespace ControlThangMay
         {
             if (!_isConnected)
             {
-                await TestConnectionAsync();
+                await TestConnectionAsync().ConfigureAwait(false);
                 if (!_isConnected) return false;
             }
 
             try
             {
                 using var connection = new NpgsqlConnection(_connectionString);
-                await connection.OpenAsync();
+                await connection.OpenAsync().ConfigureAwait(false);
 
                 int? elevatorId = null;
                 if (logEntry.ElevatorId.HasValue)
@@ -1390,7 +1445,7 @@ namespace ControlThangMay
                     var elevatorSql = "SELECT elevator_id FROM elevator WHERE code = @code";
                     using var elevatorCmd = new NpgsqlCommand(elevatorSql, connection);
                     elevatorCmd.Parameters.AddWithValue("@code", $"E{logEntry.ElevatorId}");
-                    var result = await elevatorCmd.ExecuteScalarAsync();
+                    var result = await elevatorCmd.ExecuteScalarAsync().ConfigureAwait(false);
                     if (result != null)
                         elevatorId = Convert.ToInt32(result);
                 }
@@ -1418,7 +1473,7 @@ namespace ControlThangMay
                 command.Parameters.AddWithValue("@user_name", logEntry.UserName ?? (object)DBNull.Value);
                 command.Parameters.AddWithValue("@priority", logEntry.Priority);
 
-                var id = await command.ExecuteScalarAsync();
+                var id = await command.ExecuteScalarAsync().ConfigureAwait(false);
                 return id != null;
             }
             catch
@@ -1426,6 +1481,79 @@ namespace ControlThangMay
                 _isConnected = false;
                 return false;
             }
+        }
+
+        // New: query logs by filter and optional date
+        public async Task<List<LogEntry>> QueryLogsAsync(string filter, DateTime? date)
+        {
+            var results = new List<LogEntry>();
+
+            if (!_isConnected)
+            {
+                await TestConnectionAsync().ConfigureAwait(false);
+                if (!_isConnected) return results;
+            }
+
+            using var connection = new NpgsqlConnection(_connectionString);
+            await connection.OpenAsync().ConfigureAwait(false);
+
+            var conditions = new List<string>();
+            var cmd = new NpgsqlCommand();
+            cmd.Connection = connection;
+
+            // Type filter
+            if (string.Equals(filter, "elevator", StringComparison.OrdinalIgnoreCase))
+            {
+                conditions.Add("type = 'Elevator'");
+            }
+            else if (string.Equals(filter, "emergency", StringComparison.OrdinalIgnoreCase))
+            {
+                conditions.Add("type = 'Emergency'");
+            }
+            else if (string.Equals(filter, "system", StringComparison.OrdinalIgnoreCase))
+            {
+                conditions.Add("type IN ('System','Warning','Error')");
+            }
+
+            // Date filter (by local day)
+            if (date.HasValue)
+            {
+                var dayLocal = DateTime.SpecifyKind(date.Value.Date, DateTimeKind.Local);
+                var fromUtc = dayLocal.ToUniversalTime();
+                var toUtc = dayLocal.AddDays(1).ToUniversalTime();
+                conditions.Add("created_at >= @from AND created_at < @to");
+                cmd.Parameters.AddWithValue("@from", fromUtc);
+                cmd.Parameters.AddWithValue("@to", toUtc);
+            }
+
+            var where = conditions.Count > 0 ? (" WHERE " + string.Join(" AND ", conditions)) : string.Empty;
+            cmd.CommandText = $@"SELECT log_id, created_at, type, message, elevator_id, current_floor, target_floor,
+                                         command_sent, session_id, machine_name, user_name, priority
+                                  FROM log{where}
+                                  ORDER BY created_at ASC
+                                  LIMIT 500";
+
+            using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                results.Add(new LogEntry
+                {
+                    LogId = reader.GetInt64(0),
+                    CreatedAt = reader.GetDateTime(1),
+                    Type = reader.GetString(2), 
+                    Message = reader.GetString(3),
+                    ElevatorId = reader.IsDBNull(4) ? null : reader.GetInt32(4),
+                    CurrentFloor = reader.IsDBNull(5) ? null : reader.GetInt32(5),
+                    TargetFloor = reader.IsDBNull(6) ? null : reader.GetInt32(6),
+                    CommandSent = reader.IsDBNull(7) ? null : reader.GetString(7),
+                    SessionId = reader.IsDBNull(8) ? null : reader.GetString(8),
+                    MachineName = reader.IsDBNull(9) ? null : reader.GetString(9),
+                    UserName = reader.IsDBNull(10) ? null : reader.GetString(10),
+                    Priority = reader.GetInt32(11)
+                });
+            }
+
+            return results;
         }
     }
 

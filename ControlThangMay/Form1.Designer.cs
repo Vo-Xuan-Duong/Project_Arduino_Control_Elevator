@@ -775,7 +775,7 @@
             lblSelectDate.Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
             lblSelectDate.Location = new Point(13, 30);
             lblSelectDate.Name = "lblSelectDate";
-            lblSelectDate.Size = new Size(83, 15);
+            lblSelectDate.Size = new Size(101, 15);
             lblSelectDate.TabIndex = 2;
             lblSelectDate.Text = "[CAL] Chọn ngày:";
             lblSelectDate.Click += lblSelectDate_Click;
@@ -799,7 +799,7 @@
             lblLogTitle.Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
             lblLogTitle.Location = new Point(13, 65);
             lblLogTitle.Name = "lblLogTitle";
-            lblLogTitle.Size = new Size(374, 15);
+            lblLogTitle.Size = new Size(402, 15);
             lblLogTitle.TabIndex = 10;
             lblLogTitle.Text = "[STATS] Theo dõi hoạt động thang máy - Lọc theo loại log hoặc chọn ngày";
             // 
@@ -807,17 +807,17 @@
             // 
             dtpFilterDate.Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point, 0);
             dtpFilterDate.Format = DateTimePickerFormat.Short;
-            dtpFilterDate.Location = new Point(102, 27);
+            dtpFilterDate.Location = new Point(120, 27);
             dtpFilterDate.Name = "dtpFilterDate";
             dtpFilterDate.Size = new Size(120, 23);
             dtpFilterDate.TabIndex = 3;
-            dtpFilterDate.Value = new DateTime(2025, 8, 29, 0, 0, 0, 0);
+            dtpFilterDate.Value = new DateTime(2025, 9, 11, 0, 0, 0, 0);
             // 
             // btnFilterEmergency
             // 
             btnFilterEmergency.BackColor = Color.LightPink;
             btnFilterEmergency.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point, 0);
-            btnFilterEmergency.Location = new Point(598, 25);
+            btnFilterEmergency.Location = new Point(619, 27);
             btnFilterEmergency.Name = "btnFilterEmergency";
             btnFilterEmergency.Size = new Size(120, 25);
             btnFilterEmergency.TabIndex = 8;
@@ -828,7 +828,7 @@
             // 
             btnFilterElevator.BackColor = Color.LightSkyBlue;
             btnFilterElevator.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point, 0);
-            btnFilterElevator.Location = new Point(468, 25);
+            btnFilterElevator.Location = new Point(493, 27);
             btnFilterElevator.Name = "btnFilterElevator";
             btnFilterElevator.Size = new Size(120, 25);
             btnFilterElevator.TabIndex = 7;
@@ -839,7 +839,7 @@
             // 
             btnFilterByDate.BackColor = Color.LightCyan;
             btnFilterByDate.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point, 0);
-            btnFilterByDate.Location = new Point(232, 25);
+            btnFilterByDate.Location = new Point(261, 27);
             btnFilterByDate.Name = "btnFilterByDate";
             btnFilterByDate.Size = new Size(100, 25);
             btnFilterByDate.TabIndex = 4;
@@ -850,7 +850,7 @@
             // 
             btnFilterSystem.BackColor = Color.LightYellow;
             btnFilterSystem.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point, 0);
-            btnFilterSystem.Location = new Point(338, 25);
+            btnFilterSystem.Location = new Point(367, 28);
             btnFilterSystem.Name = "btnFilterSystem";
             btnFilterSystem.Size = new Size(120, 25);
             btnFilterSystem.TabIndex = 6;
@@ -861,7 +861,7 @@
             // 
             btnClearLog.BackColor = Color.LightCoral;
             btnClearLog.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point, 0);
-            btnClearLog.Location = new Point(860, 27);
+            btnClearLog.Location = new Point(871, 27);
             btnClearLog.Name = "btnClearLog";
             btnClearLog.Size = new Size(120, 35);
             btnClearLog.TabIndex = 5;
@@ -872,7 +872,7 @@
             // 
             btnResetFilter.BackColor = Color.LightGray;
             btnResetFilter.Font = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Point, 0);
-            btnResetFilter.Location = new Point(728, 25);
+            btnResetFilter.Location = new Point(745, 27);
             btnResetFilter.Name = "btnResetFilter";
             btnResetFilter.Size = new Size(120, 25);
             btnResetFilter.TabIndex = 9;

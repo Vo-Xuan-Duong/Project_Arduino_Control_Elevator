@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "ControlThangMay": {
+      "commandName": "Project",
+      "sqlDebugging": false,
+      "hotReloadEnabled": false
+    }
+  }
+}

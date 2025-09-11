@@ -1,11 +1,8 @@
 {
     "database": {
-        "host": "localhost",
+        "host": "127.0.0.1",
         "port": 5432,
-        "database": "postgres",
         "username": "postgres",
-        "password": 123456,
-        "enableSSL": true,
-        "enableLogging": true
+        "password": "123456"
     }
 }
